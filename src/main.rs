@@ -1,7 +1,8 @@
-use actix_web::{get, web, App, HttpResponse, HttpServer};
+use actix_web::{get, http::header, post, web, App, HttpResponse, HttpServer};
 use askama::Template;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use serde::Deserialize;
 use thiserror::Error;
 
 struct TodoEntry {
@@ -57,14 +58,47 @@ async fn index(db: WebDataBasePool) -> AppResult<HttpResponse> {
         .body(response_body))
 }
 
-const SQL_CREATE_TABLE: &str = "\
+#[derive(Deserialize)]
+struct AddParams {
+    text: String,
+}
+
+#[post("/add")]
+async fn add_todo(params: web::Form<AddParams>, db: WebDataBasePool) -> AppResult<HttpResponse> {
+    const SQL: &str = "INSERT INTO todo (text) VALUES (?)";
+    let conn = db.get()?;
+    conn.execute(SQL, &[&params.text])?;
+    Ok(HttpResponse::SeeOther()
+        .header(header::LOCATION, "/")
+        .finish())
+}
+
+#[derive(Deserialize)]
+struct DeleteParams {
+    id: u32,
+}
+
+#[post("/delete")]
+async fn delete_todo(
+    params: web::Form<DeleteParams>,
+    db: WebDataBasePool,
+) -> AppResult<HttpResponse> {
+    const SQL: &str = "DELETE FROM todo WHERE id=?";
+    let conn = db.get()?;
+    conn.execute(SQL, &[params.id])?;
+
+    Ok(HttpResponse::SeeOther()
+        .header(header::LOCATION, "/")
+        .finish())
+}
+
+#[actix_rt::main]
+async fn main() -> Result<(), actix_web::Error> {
+    const SQL_CREATE_TABLE: &str = "\
 CREATE TABLE IF NOT EXISTS todo (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     text TEXT NOT NULL
 )";
-
-#[actix_rt::main]
-async fn main() -> Result<(), actix_web::Error> {
     let manager = SqliteConnectionManager::file("todo.db");
     let pool = Pool::new(manager).expect("Failed to initialize the connection pool");
     let conn = pool
@@ -72,10 +106,16 @@ async fn main() -> Result<(), actix_web::Error> {
         .expect("Failed to get the connection from the pool");
     conn.execute(SQL_CREATE_TABLE, rusqlite::params![])
         .expect("Failed to create a table `todo`.");
-    HttpServer::new(move || App::new().service(index).data(pool.clone()))
-        .bind("0.0.0.0:8080")?
-        .run()
-        .await?;
+    HttpServer::new(move || {
+        App::new()
+            .service(index)
+            .service(add_todo)
+            .service(delete_todo)
+            .data(pool.clone())
+    })
+    .bind("0.0.0.0:8080")?
+    .run()
+    .await?;
 
     Ok(())
 }
